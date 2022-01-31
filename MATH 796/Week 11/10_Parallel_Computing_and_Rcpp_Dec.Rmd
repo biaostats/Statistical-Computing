@@ -1,0 +1,733 @@
+---
+title: "Parallel Computing and Rcpp"
+author: "Qi Zhang (with materials from AdvancedR by Hadley Wickham and Rcpp for everyone by Masaki E.Tsuda)"
+date: "8/12/2021"
+output: html_document
+---
+
+## Introduction
+
+Sometimes R code is just not fast enough, even after you have done everything you can to speed it up in R. 
+In this lecture you'll learn how to improve performance by rewriting key functions in C++. 
+This magic comes by way of the Rcpp package, a fantastic tool written by Dirk Eddelbuettel and Romain Francois 
+(with key contributions by Doug Bates, John Chambers, and JJ Allaire). Rcpp makes it very simple to connect C++ to R. 
+While it is possible to write C or Fortran code for use in R, it will be painful by comparison. 
+Rcpp provides a clean, approachable API that lets you write high-performance code, insulated from R's arcane C API.
+Typical bottlenecks that C++ can address include:
+
+   * Loops that can't be easily vectorised because subsequent iterations depend on previous ones.
+   
+   * Recursive functions, or problems which involve calling functions millions of times. The overhead of calling a function in C++ is much lower than that in R.
+   
+   * Problems that require advanced data structures and algorithms that R doesn't provide. Through the standard template library (STL), C++ has efficient implementations of many important data structures, from ordered maps to double-ended queues.
+  
+The aim of this lecture is to discuss only those aspects of C++ and Rcpp that are absolutely necessary to help you eliminate bottlenecks in your code.
+ We won't spend much time on advanced features because the focus is on writing small, self-contained functions, not big programs. A working knowledge of C++ is helpful, but not essential.
+
+ I am not an expert in C++. I just use it to get my statistical works done. The goal of this lecture is to help you achieve the same.
+
+#### Prerequisites {-}
+
+We'll use [Rcpp](http://www.rcpp.org/) to call C++ from R. Please install R packages Rcpp and RcppArmadillo.
+
+```{r setup,eval=F}
+library(Rcpp)
+```
+
+You'll also need a working C++ compiler. To get it:
+
+* On Windows, install [Rtools](http://cran.r-project.org/bin/windows/Rtools/).
+* On Mac, install Xcode from the app store.
+* On Linux, `sudo apt-get install r-base-dev` or similar.
+
+#### cppFunction()
+
+`cppFunction()` allows you to write C++ functions in R:
+
+```{r add,eval=F}
+cppFunction('int add(int x, int y, int z) {
+  int sum = x + y + z;
+  return sum;
+}')
+# add works like a regular R function
+add
+add(1, 2, 3)
+```
+
+When you run this code, Rcpp will compile the C++ code and construct an R function that connects to the compiled C++ function. 
+There's a lot going on underneath the hood but Rcpp takes care of all the details so you don't need to worry about them. C++ is a large language.Instead, you'll get the basics so that you can start writing useful functions to address bottlenecks in your R code.
+ 
+
+The next example function implements a scalar version of the `sign()` function which returns 1 if the input is positive, and -1 if it's negative:
+
+```{r sign,eval=F}
+signR <- function(x) {
+  if (x > 0) {
+    1
+  } else if (x == 0) {
+    0
+  } else {
+    -1
+  }
+}
+cppFunction('int signC(int x) {
+  int output;
+  if (x > 0) {
+    output=1;
+  } else if (x == 0) {
+    output=0;
+  } else {
+    output=-1;
+  }
+  return output;
+}')
+
+
+signC(10)
+signC(-10)
+signC(0)
+
+
+```
+
+In the C++ version:
+
+* We declare the type of each input in the same way we declare the type of the output. While this makes the code a little more verbose, it also makes clear the type of input the function needs.
+*  The commonly used variable types in C++ includes: int, double, bool, char. Rcpp package also provides data types that are parallel in R's, include, NumericVector, LogicalVector, IntegerVector, CharacterMatrix and their matrix versions NumericMatrix, and IntegerMatrix, CharacterMatrix, and LogicalMatrix. Rcpp also produces List. You must declare the type of an variable before before using it.
+
+*  The if syntax is identical to R's, while there are some big differences between R and C++, there are also lots of similarities!
+#' C++ also has a while statement that works the same way as R's.
+
+
+
+#### Practice:
+In a practice problem on control flow and iteration, and Lab questions on writing R functions, you were introduced to SCAD(Smoothly Clipped Absolute Deviation) Penalty.
+For fixed parameters lambda>0 and a>2, and input x>=0, it returns value lambda if x is no larger than lambda,
+(a*lambda-x)/(a-1) if x is between lambda and a*lambda, and 0 if x is larger than a*lambda.
+When x<0, it calculate the penalty for the absolute value of x.
+Please write a C++ function scad1_Rcpp using cppFunction that takes x,lambda and a as input, and output the value of the SCAD penalty, please test it for x=1:10, lambda=2, a=3.7
+
+
+
+#### Rcpp for loops
+One big difference between R and C++ is that the cost of loops is much lower in C++. For example, we could implement the `sum` function in R using a loop. 
+
+```{r sum-r,eval=F}
+sumR <- function(x) {
+  total <- 0
+  for (i in seq_along(x)) {
+    total <- total + x[i]
+  }
+  total
+}
+```
+
+In C++, loops have very little overhead, so it's fine to use them. There are alternatives to `for` loops that more clearly express your intent; they're not necessarily faster, but they can make your code easier to understand.
+
+```{r sum-cpp,eval=F}
+cppFunction('double sumC(NumericVector x) {
+  int n = x.size();
+  double total = 0;
+  for(int i = 0; i < n; ++i) {
+    total += x[i];
+  }
+  return total;
+}')
+```
+
+The C++ version is similar, but:
+
+* To find the length of the vector, we use the `.size()` method, which returns an integer. C++ methods are called with `.` (i.e., a full stop).
+  
+* The `for` statement has a different syntax: `for(init; check; increment)`. This loop is initialised by creating a new variable called `i` with value 0.
+  Before each iteration we check that `i < n`, and terminate the loop if it's not. After each iteration, we increment the value of `i` by one, using the
+  special prefix operator `++` which increases the value of `i` by 1.
+
+* In C++, vector indices start at 0, which means that the last element is at position `n - 1`. I'll say this again because it's so important: 
+  __IN C++, VECTOR INDICES START AT 0__! This is a very common source of bugs when converting R functions to C++.
+
+* Use `=` for assignment, not `<-`.
+
+* C++ provides operators that modify in-place: `total += x[i]` is equivalent to  `total = total + x[i]`. Similar in-place operators are `-=`, `*=`, and `/=`.
+
+
+This is a good example of where C++ is much more efficient than R. As shown by the following microbenchmark, `sumC()` is competitive with the built-in (and highly optimised) `sum()`, while `sumR()` is several orders of magnitude slower.
+
+```{r sum-bench,eval=F}
+library(microbenchmark)
+x <- runif(1e3)
+microbenchmark(
+  sum(x),
+  sumC(x),
+  sumR(x)
+)
+```
+
+
+When iterative root-finding or optimization algorithm is slow, you may want to speed it up using Rcpp. Now let us re-write the secant algorithm example using Rcpp.
+
+```{r,eval=F}
+f.example = function(x) x-log(abs(x)+1)-1
+eps = 1e-10
+iter.max = 200
+
+update.secant <- function(xk,xk1,f){
+  x.next = xk-f(xk)*(xk-xk1)/(f(xk)-f(xk1))
+  return(x.next)
+}
+
+iter=0
+err.x=1
+x.init0 =1
+x.init1 =1.1
+while(err.x>eps&iter<iter.max){
+  x.new = update.secant(xk=x.init0,xk1=x.init1, f=f.example)
+  err.x = abs(x.new-x.init1)
+  iter=iter+1
+  x.init1=x.init0
+  x.init1=x.new
+}
+
+cppFunction('double secantExample(double x_init0,double x_init1, double err_max, int iter_max) {
+  double x_new;
+  int iter=0;
+  double err = 100*err_max;
+  do{
+    double f0 = x_init0-log(abs(x_init0)+1)-1;
+    double f1 = x_init1-log(abs(x_init1)+1)-1;
+    x_new = x_init1 - f1*(x_init1-x_init0)/(f1-f0);
+    err = abs(x_new-x_init1);
+    x_init0 = x_init1;
+    x_init1 = x_new;
+    iter++;
+  }
+  while(err<err_max&&iter<iter_max);
+  return x_new;
+}')
+
+
+
+```
+
+
+Rcpp allows output a list structure similar to R's.
+Now let us it to add more information to the output for downstream analysis and debugging.
+
+```{r,eval=F}
+cppFunction('List secantListExample(double x_init0,double x_init1, double err_max, int iter_max) {
+  List output;
+  double x_new;
+  int iter=0;
+  double err = 100*err_max;
+  do{
+    double f0 = x_init0-log(abs(x_init0)+1)-1;
+    double f1 = x_init1-log(abs(x_init1)+1)-1;
+    x_new = x_init1 - f1*(x_init1-x_init0)/(f1-f0);
+    err = abs(x_new-x_init1);
+    x_init0 = x_init1;
+    x_init1 = x_new;
+    iter++;
+  }
+  while(err>err_max&&iter<iter_max);
+  output.push_back(x_new,"solution");
+  output.push_back(iter,"iteration");
+  output.push_back(err<err_max,"convergence");
+  return output;
+}')
+secantListExample(1,1.1,1e-8,200)
+
+```
+
+Rcpp provides numerous R-like functions for you to use directly when writing C++ code. (I think they are called Rcpp Sugar functions). For an incomplete list of such functions, please refer to 
+
+https://teuder.github.io/rcpp4everyone_en/210_rcpp_functions.html
+
+
+#### Practice:
+1. Please write a C++ function sdC (implement from scratch) that computes the standard deviation of the input vector, and then test it by calculating the standard deviation of 1000 random samples from N(0,1) and Poisson(4),respectively.
+In C++, function pow(x,a) outputs the value of $x^a$.
+
+2. Write an C++ algorithm of Newton Method root finding for the class example. Tips: Rcpp sugar function sign() did not work in my code, maybe because it only takes a vector for input, not a single number. I used 2*(x>0)-1 as sign(x).
+
+
+#### Working with matrices in Rcpp
+
+ Each vector type has a matrix equivalent: NumericMatrix, IntegerMatrix, CharacterMatrix, and LogicalMatrix. Using them is straightforward.
+#' For example, we could create a function that reproduces rowSums():
+
+
+
+```{r ,eval=F}  
+  cppFunction('NumericVector rowSumsC(NumericMatrix x) {
+  int nrow = x.nrow(), ncol = x.ncol();
+  NumericVector out(nrow);
+
+  for (int i = 0; i < nrow; i++) {
+    double total = 0;
+    for (int j = 0; j < ncol; j++) {
+      total += x(i, j);
+    }
+    out[i] = total;
+  }
+  return out;
+}')
+set.seed(1014)
+x <- matrix(sample(100), 10)
+rowSums(x)
+rowSumsC(x)
+```
+The main differences:
+
+* In C++, you subset a matrix with (), not [].
+
+* Use .nrow() and .ncol() methods to get the dimensions of a matrix.
+
+You may use the R like functions in C++ to shorten the code. Some of these functions work with vectors, so it vectorize the operations. They typically do not make the code faster, just more clear and readable.
+
+
+```{r ,eval=F}  
+  cppFunction('NumericVector rowSumsC_sugar(NumericMatrix x) {
+  int nrow = x.nrow(), ncol = x.ncol();
+  NumericVector out(nrow);
+
+  for (int i = 0; i < nrow; i++) {
+    out(i) = sum(x(i,_));
+  }
+  return out;
+}')
+set.seed(1014)
+x <- matrix(sample(100), 10)
+rowSums(x)
+rowSumsC(x)
+rowSumsC_sugar(x)
+```
+
+
+
+#### RcppArmadillo 
+
+When you need to do more complicated linear algebra operations such as matrix multiplication. Such R-like functions are enough.
+
+This is when R package RcppArmadillo comes into the picture. Armadillo (http://arma.sourceforge.net) is a C++ library for linear algebra and scientific computing.
+RcppArmadillo package makes them available in Rcpp framework. It makes Rcpp programming much more similar to R programming. 
+Theoretically, RcppArmadillo does not make the computation faster, its matrix/vector operations does the loop under the hood. Empirically, when you are filling an output matrix, you may need to define temporary variables within the loop. RcppArmadillo cuts off such overhead, so it may be faster empirically.
+
+```{r,eval=F}
+library(RcppArmadillo)
+cppFunction('arma::vec rowSumsA(arma::mat X){
+  int nRows = X.n_rows;
+  arma::vec out(nRows);
+  for(int i = 0; i < nRows; i++){
+    out(i) = sum(X.row(i));
+  }
+  return out;
+}',depends='RcppArmadillo')
+
+rowSumsA(x)
+```
+
+
+Differences between arma::mat and NumericMatrix
+
+* You can do matrix operations on arma::mat, arma::vec.
+* shape matters: arma::vec arma::colvec and arma::rowvec are different, and somtimes such differences matters.
+* x.n_rows instead of x.nrow() to get the number of rows
+* Extracting individual row by x.row(i), submatrix by x.rows(id) where id is an arma::rowvec or arma::colvec? Does it matter
+* Some functions can only be applied to one of arma::mat or armma::vec or NumericMatrix/NumericVector.
+
+I am pretty much sure that if you stick to arma, you should be able to find most functions that you need.
+ But I am reluctant to suggest that we can abandon NumericMatrix and the likes all together, because a lots of thrid-party Rcpp programs assume these types. Many R-like functions on arma::mat are slower than their counter-parts for NumericMatrix.
+ 
+ If you need conversion between NumericMatrix and arma::mat or something like this, it can be done using C++ commands like the following.
+
+ NumericVector x_nv = wrap(x_armavec);
+
+ arma::vec x_armavec = as<arma::vec>(x_nv);
+
+
+Before we move to practice, the following is an example of matrix multiplication. First comes a function for matrix multiplication using NumericMatrix. I found it on stackoverflow (https://stackoverflow.com/questions/37191673/matrix-multiplication-in-rcpp), and my code using RcppArmadillo.
+
+```{r,eval=F}
+cppFunction('NumericMatrix mmult(const NumericMatrix& m1, const NumericMatrix& m2){
+if (m1.ncol() != m2.nrow()) stop ("Incompatible matrix dimensions");
+NumericMatrix out(m1.nrow(),m2.ncol());
+NumericVector rm1, cm2;
+for (size_t i = 0; i < m1.nrow(); ++i) {
+    rm1 = m1(i,_);
+    for (size_t j = 0; j < m2.ncol(); ++j) {
+      cm2 = m2(_,j);
+      out(i,j) = std::inner_product(rm1.begin(), rm1.end(), cm2.begin(), 0.);              
+    }
+  }
+return out;
+}')
+
+cppFunction('arma::mat mmult_arma(arma::mat m1, arma::mat m2){
+arma::mat out=m1*m2;
+return out;
+}',depends='RcppArmadillo')
+
+
+
+A = matrix(1:10,2,5)
+B = matrix(1:15,5,3)
+
+library(microbenchmark)
+
+microbenchmark(mmult(A,B),mmult_arma(A,B),A%*%B)
+
+
+
+
+
+```
+
+
+
+
+
+#### Practice:
+
+Write function for data standardization. Its input is a data matrix X with n rows and p columns. The output is a data matrix Z of the same size. Let $z_j$ and $x_j$ be the jth column of Z and X, respectively. There is $z_j=(x_j-m_j)/sd_j$ where $m_j$ and $sd_j$ are  the mean and the standard deviation of $x_j$. So $Z$ is the standardized version of $X$ such that each of its column has mean 0 and sd 1. Please test it using a 100 by 3 matrix would ith column are random samples from N(i,i+2).
+
+Tips: (a) arma::stddev calculates the standard deviation of a arma::vec. sd is the Rcpp sugar function for the standard deviation of a NumericVector  (b) If you have defined arma::mat Z with n rows and p columns, and a vector b of length n, Z.col(i)=b will assign the values of b to the ith column of Z. If Z is NumericMatrix, and b a NumericVector, Z(_,i)=b fill the column with b.
+
+I wrote two versions, one with arma, and one without. If you finish your first version early, you can try the other.
+
+#### Generating random numbers in Rcpp
+
+ Rcpp is especially useful when running an analysis that requires a large number of iterations or replicates. While optimization problems in real science and engineering are often slow, the class examples are too easy to illustrate the computational advantages of Rcpp.
+ T computational intensive methods that we have seen in this class includes generating random variables (e.g., acceptance-rejection sampling), Monte Carlo Estimation/Inference and bootstrap. In the following, I will illustrate the computational advantage of Rcpp using a bootstrap example.
+
+In a practice problem on Bootstrap, we computed the bootstrap based CIs for the correlation between Assault rate and urbanPop in USArest data. Recall that for Percentile or Basic CIs, we need a large number of Bootstrap replicates, and it can be computationally intensive. Now let us try to speed it up using Rcpp. Since the computationally intensive part is the bootstrapping process but not how to calculate the intervals with bootstrap output, we will focus on the bootstrapping part.
+
+```{r,eval=F}
+boot.cor <- function(dt){
+  n = nrow(dt)
+  id.b = sample(1:n,size=n,replace = T)
+  boot.samp.b = dt[id.b,]
+  boot.rep.b = cor(boot.samp.b$Assault,boot.samp.b$UrbanPop)
+  return(boot.rep.b)
+}
+
+B = 1000
+set.seed(2046)
+out.boot.cor = replicate(B,boot.cor(USArrests))
+library(Rcpp)
+
+cppFunction('List boot_cor_rcpp(NumericVector x, NumericVector y, int B){
+  int n = x.size();
+  IntegerMatrix id(n,B);
+  NumericVector stat(B);
+  IntegerVector idall = seq_len(n);
+  for(int i = 0; i < B; i++){
+    IntegerVector idi =sample(idall,n,TRUE);
+    NumericVector xi =x[idi-1];
+    NumericVector yi =y[idi-1];
+    stat[i] = (std::inner_product(xi.begin(), xi.end(), yi.begin(), 0.)-mean(xi)*mean(yi)*n)/((n-1)*sd(xi)*sd(yi)) ;
+    id(_,i) = idi;
+  }
+  List output;
+  output.push_back(stat,"stat");
+  output.push_back(id,"sample_id");
+  return output;
+}')
+
+```
+
+I am not aware of any Rcpp sugar function for correlation, so it is implemented from scratch in the above code. The formula of correlation has many equivalent forms, and I pick one that minimzes my coding complexity. 
+
+There is a function cor() for arma::mat, and it outputs an arma::mat. If we choose not to implement the correlation calculation, we can use it. But then we need to convert NumericVectors to arma::mat. The output of cor() is a 1 by 1 matrix. Since C++ is zero based, the element we need is (0,0). As you see. Both implementations are 40 times faster than R.
+
+```{r,eval=F}
+cppFunction('List boot_cor_rcpp_arma(NumericVector x, NumericVector y, int B){
+  int n = x.size();
+  IntegerMatrix id(n,B);
+  NumericVector stat(B);
+  IntegerVector idall = seq_len(n);
+  for(int i = 0; i < B; i++){
+    IntegerVector idi =sample(idall,n,TRUE);
+    NumericVector xi0 = x[idi-1];
+    NumericVector yi0 = y[idi-1];
+    arma::mat xi =xi0;
+    arma::mat yi =yi0;
+    arma::mat cori = arma::cor(xi,yi);
+    stat[i] = cori(0,0);
+    id(_,i) = idi;
+  }
+  List output;
+  output.push_back(stat,"stat");
+  output.push_back(id,"sample_id");
+  return output;
+}',depends='RcppArmadillo')
+
+
+B=1000
+microbenchmark(replicate(B,boot.cor(USArrests)),boot_cor_rcpp(USArrests$Assault,USArrests$UrbanPop,B),boot_cor_rcpp_arma(USArrests$Assault,USArrests$UrbanPop,B))
+
+```
+
+#### Practice
+Modify either boot_cor_rcpp or boot_cor_rcpp_arma to include a standard error estimate for each boostrap replicate based on double bootstrap. You do not need to save the sample ids of the inner layer bootstrap. Please test it using USArest example with B=1000, and B2=100.
+
+
+#### Using sourceCpp
+
+So far, we've used inline C++ with `cppFunction()`. This makes presentation simpler, but for bigger problems, it is usually easier to use stand-alone C++ files and then source them into R using `sourceCpp()`. This lets you take advantage of text editor support for C++ files (e.g., syntax highlighting) as well as making it easier to identify the line numbers in compilation errors. On your stand-alone C++ file, you will also be able to write utility functions that can be used in your other C++ functions on the same file. This helps you divide your tasks into managable modules. In contrast, your C++ function within cppFunction() must be self-contained. 
+
+Your stand-alone C++ file should have extension `.cpp`, and needs to start with:
+
+```cpp
+#include <Rcpp.h>
+using namespace Rcpp;
+```
+
+And for each function that you want available within R, you need to prefix it with:
+
+```cpp
+// [[Rcpp::export]]
+```
+
+You can embed R code in special C++ comment blocks. This is convenient if you want to run some test code. But I have never used this feature.
+
+```cpp
+/*** R
+# This is R code
+*/
+```
+
+The R code is run with `source(echo = TRUE)` so you don't need to explicitly print output.
+
+To compile the C++ code, use `sourceCpp("path/to/file.cpp")`. This will create the matching R functions and add them to your current session. Note that these functions can not be saved in a `.Rdata` file and reloaded in a later session; they must be recreated each time you restart R. 
+
+For example, running `sourceCpp()` on the following file implements mean in C++ and then compares it to the built-in `mean()`:
+
+```{r, engine = "Rcpp", eval = FALSE}
+#include <Rcpp.h>
+using namespace Rcpp;
+// [[Rcpp::export]]
+double meanC(NumericVector x) {
+  int n = x.size();
+  double total = 0;
+  for(int i = 0; i < n; ++i) {
+    total += x[i];
+  }
+  return total / n;
+}
+/*** R
+x <- runif(1e5)
+bench::mark(
+  mean(x),
+  meanC(x)
+)
+*/
+```
+
+My preferred way of running tests is to only write C++ functions on C++ file, export very function to R, compile it by sourceCpp(), and test using an R script. This allows me to run different tests. 
+
+The following is the first example C++ files. 
+
+```cpp
+#include <Rcpp.h>
+using namespace Rcpp;
+
+// [[Rcpp::export]]
+NumericVector rowSumsC(NumericMatrix x) {
+  int nrow = x.nrow(), ncol = x.ncol();
+  NumericVector out(nrow);
+
+  for (int i = 0; i < nrow; i++) {
+    double total = 0;
+    for (int j = 0; j < ncol; j++) {
+      total += x(i, j);
+    }
+    out[i] = total;
+  }
+  return out;
+}
+
+NumericVector rowSumsC_sugar(NumericMatrix x) {
+  int nrow = x.nrow(), ncol = x.ncol();
+  NumericVector out(nrow);
+
+  for (int i = 0; i < nrow; i++) {
+    out(i) = sum(x(i,_));
+  }
+  return out;
+}
+
+
+```
+
+Let us call this file sum.cpp. Then we run sourceCpp('sum.cpp'), which functions can be used in R now? 
+
+```{r,eval=F}
+setwd('D:\\Dropbox\\courses\\stat_computing\\Lecture notes\\')
+library(Rcpp)
+sourceCpp('sum.cpp')
+ls()
+
+
+```
+
+
+They are rowSumsC but not rowSumsC_sugar, because we did not export it to R, adding "// [[Rcpp::export]]" before the definition of this function will make it usable as an R function.
+
+If you want to add rowSumsA, you need to add the following to the cpp file
+
+```cpp
+
+// [[Rcpp::export]]
+arma::vec rowSumsA(arma::mat X){
+  int nRows = X.n_rows;
+  arma::vec out(nRows);
+  for(int i = 0; i < nRows; i++){
+    out(i) = sum(X.row(i));
+  }
+  return out;
+}
+
+```
+Since we are using RcppArmadillo, the header of the file should be the following.
+
+```cpp
+
+#include <RcppArmadillo.h>
+// [[Rcpp::depends(RcppArmadillo)]]
+#include <Rcpp.h>
+using namespace Rcpp;
+
+```
+
+If you include Rcpp.h before RcppArmadillo.h, you will get an error. In fact, when you include RcppArmadillo.h, Rcpp.h will be automatically included, so there is no need to add the line '#include <Rcpp.h>'. But I still like to add this line, because it makes what are included more explicit.
+
+
+One advantage of using sourceCpp is that now we are able to write or use C++ utility functions that can be used in other C++ functions. This makes your workflow more modular. For example, we can now divide the secantListExample into a main loop function, and a function for secant update.
+Next time if you want to use secant method on a different example, you only need to write a new function for secant update, and can keep the funcion of the main loop secantList unchanged. 
+
+```cpp
+
+double secant_update(double x_init0,double x_init1){
+    double f0 = x_init0-log(abs(x_init0)+1)-1;
+    double f1 = x_init1-log(abs(x_init1)+1)-1;
+    x_new = x_init1 - f1*(x_init1-x_init0)/(f1-f0);
+    return(x_new);
+}
+
+// [[Rcpp::export]]
+List secantList(double x_init0,double x_init1, double err_max, int iter_max) {
+  List output;
+  double x_new;
+  int iter=0;
+  double err = 100*err_max;
+  do{
+    x_new = secant_update(x_init0,x_init1);
+    err = abs(x_new-x_init1);
+    x_init0 = x_init1;
+    x_init1 = x_new;
+    iter++;
+  }
+  while(err>err_max&&iter<iter_max);
+  output.push_back(x_new,"solution");
+  output.push_back(iter,"iteration");
+  output.push_back(err<err_max,"convergence");
+  return output;
+}
+
+
+```
+Similarly, we can now divide the bootstrap example into (a) a function to calculate the correlation, (b) a function for one bootstrap replicate, and (c) the main loop for B times.
+
+
+```cpp
+
+#include <Rcpp.h>
+using namespace Rcpp;
+
+
+// [[Rcpp::export]]
+double mycor(NumericVector x, NumericVector y, int n){
+  double output = (std::inner_product(x.begin(), x.end(), y.begin(), 0.)-mean(x)*mean(y)*n)/((n-1)*sd(x)*sd(y)) ;
+}
+
+// [[Rcpp::export]]
+List boot_cor_onerep(NumericVector x, NumericVector y, IntegerVector idall, int n){
+    IntegerVector idi =sample(idall,n,TRUE);
+    NumericVector xi =x[idi-1];
+    NumericVector yi =y[idi-1];
+    double cori = mycor(x,y,n);
+    List output;
+    output.push_back(cori,"stat");
+    output.push_back(idi,"sample_id");
+    return output;
+}
+
+// [[Rcpp::export]]
+List boot_cor_main(NumericVector x, NumericVector y, int B){
+  int n = x.size();
+  IntegerMatrix id(n,B);
+  NumericVector stat(B);
+  IntegerVector idall = seq_len(n);
+  for(int i = 0; i < B; i++){
+    List outi = boot_cor_onerep(x,y,idall,n);
+    stat[i] = outi["stat"];
+    id(_,i) = outi["sample_id"];
+  }
+  List output;
+  output.push_back(stat,"stat");
+  output.push_back(id,"sample_id");
+  return output;
+}
+
+```
+
+```{r,eval=F}
+setwd('D:\\Dropbox\\courses\\stat_computing\\Lecture notes\\')
+library(Rcpp)
+library(RcppArmadillo)
+sourceCpp('10_Parallel_Computing_and_Rcpp_Dec.cpp')
+ls()
+out.cor.boot.rcpp = boot_cor_main(USArrests$Assault,USArrests$UrbanPop,1000)
+
+```
+
+For further information on Rcpp, the following are some resources that I have found useful
+
+* Chapter on Rcpp of AdvancedR by Hadley Wickham (http://adv-r.had.co.nz/)
+
+* Rcpp for everyone by Masaki E.Tsuda (https://teuder.github.io/rcpp4everyone_en/)
+
+* Webpage of C+= Armadillo library (http://arma.sourceforge.net/), pretty much RcppArmadillo has all these functions.
+
+
+#### Practice
+
+Create a C++ file called mycpp.cpp, and add all your inline cppFunction() for the previous practice problem to it. Please make sure the header and prefix are correct. Test your file by loading it with sourceCpp(), and test the functions in R with appropriate inputs. 
+
+
+## Parallel Computing with R
+
+It is desirable to use more than one cores of CPU for computation, because it will speed it up.
+By default, R only uses one core. To check how many cores your CPU has, you can run
+```{r}
+library(parallel)
+detectCores()
+```
+
+
+
+In the past (when I had easy access to powerful computers with linux system), the parallel computing mechanism that I used the most was mclapply() in R package parallel. It is essentially lapply() except that you can use multiple cores,  and the number is specified by argument mc.cores.
+parLapply is pretty similar, but tailored towards computing cluster.
+
+ Unfortunately, in Windows system, they can only use one core.
+
+foreach function in R package foreach is the closest thing to mclapply() for Windows.
+#Its disadvantage includes that you need to load packages and customized functions within the loop, and its overhead tend to be high. In one of my own experiments, it cut the computing time by half regardless whether 4 or 8 cores were used. If there was no overhead, the computing time should decrease linearly with the number of cores.
+
+
+There is also a package callsed RcppParallel that parallel C++ code within Rcpp framework. I have not successfully applied it.
+
+#### Microsoft Open R
+
+For those who are stucked with Window machine, a naive way of "parallel" computing is t ouse Microsoft Open R (https://mran.microsoft.com/open). It automatically uses multiple cores in R for the basic linear algebra operations such as matrix multiplication. The only downside is  that it is based on a slightly older version of R, and do not update as often. So sometimes some packages may fail to install. In order to use it, you do not need to do anything special after installing it.
+
